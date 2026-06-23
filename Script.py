@@ -1,6 +1,7 @@
 import os
 import cv2
 import kagglehub
+import numpy as np
 
 # Downloads if not cached yet, otherwise just returns the existing local path instantly
 DATA_DIR = kagglehub.dataset_download("paultimothymooney/chest-xray-pneumonia")
@@ -51,3 +52,11 @@ def validate_dataset(data_dir):
 
 
 validate_dataset(TRAIN_DIR)
+
+image = cv2.imread(sample_path, cv2.IMREAD_GRAYSCALE)
+
+# Scale to [0, 1]
+image_scaled = image.astype(np.float32) / 255.0
+
+print(f"Before scaling: {image.min()} to {image.max()}")
+print(f"After scaling:  {image_scaled.min():.3f} to {image_scaled.max():.3f}")
