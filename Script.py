@@ -7,10 +7,10 @@ from matplotlib import pyplot as plt
 # 1. SETUP & CONFIGURATION
 DATA_DIR = kagglehub.dataset_download("paultimothymooney/chest-xray-pneumonia")
 TRAIN_DIR = os.path.join(DATA_DIR, "chest_xray", "train")
-TARGET_SIZE = (224, 224)  # Global target size
+TARGET_SIZE = (224, 224)
 
 
-# 2. IMAGE PREPROCESSING HELPER
+# 2. IMAGE PREPROCESSING HELPERS
 def resize_with_padding(image, target_size):
     """Preserves aspect ratio and pads remaining edges with black pixels."""
     h, w = image.shape[:2]
@@ -39,7 +39,6 @@ def get_clean_file_paths(data_dir):
         for fname in os.listdir(class_path):
             fpath = os.path.join(class_path, fname)
 
-            # Basic validation check
             img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
             if img is None: continue
             if img.shape[0] < 100 or img.shape[1] < 100: continue
@@ -54,7 +53,7 @@ def get_clean_file_paths(data_dir):
 train_image_paths = get_clean_file_paths(TRAIN_DIR)
 
 
-# 4. UPDATED STATS CALCULATOR (Now much faster because images are smaller!)
+# 4. MEMORY-SAFE STATISTICS CALCULATOR (With full preprocessing integrated)
 def compute_train_stats_from_list(image_paths, target_size):
     total_pixels = 0
     pixel_sum = 0.0
@@ -66,8 +65,11 @@ def compute_train_stats_from_list(image_paths, target_size):
     for fpath in image_paths:
         img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
 
-        # Apply preprocessing sequence: Enhance -> Resize -> Scale
-        img_enhanced = clahe.apply(img)
+        # New Step: Denoise first to avoid amplifying noise with CLAHE
+        img_denoised = cv2.bilateralFilter(img, d=5, sigmaColor=50, sigmaSpace=50)
+
+        # Run rest of pipeline
+        img_enhanced = clahe.apply(img_denoised)
         img_resized = resize_with_padding(img_enhanced, target_size)
         img_scaled = img_resized.astype(np.float32) / 255.0
 
@@ -83,16 +85,19 @@ def compute_train_stats_from_list(image_paths, target_size):
     return mean, std
 
 
-# Calculate stats on the fully preprocessed images
+# Calculate accurate stats on preprocessed images
 train_mean, train_std = compute_train_stats_from_list(train_image_paths, TARGET_SIZE)
 
-# 5. VISUALIZE PREPROCESSING PIPELINE STEP-BY-STEP
+# 5. VISUALIZE PIPELINE STEP-BY-STEP (Updated with 4 panels)
 sample_path = train_image_paths[0]
 original = cv2.imread(sample_path, cv2.IMREAD_GRAYSCALE)
 
-# Run pipeline on sample
+# Step-by-step pipeline execution
+denoised = cv2.bilateralFilter(original, d=5, sigmaColor=50, sigmaSpace=50)
+
 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-enhanced = clahe.apply(original)
+enhanced = clahe.apply(denoised)
+
 padded_and_resized = resize_with_padding(enhanced, TARGET_SIZE)
 
 # Final step: Normalize
@@ -100,13 +105,16 @@ scaled = padded_and_resized.astype(np.float32) / 255.0
 normalized = (scaled - train_mean) / train_std
 
 # Visual Confirmation
-fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 axes[0].imshow(original, cmap='gray')
-axes[0].set_title(f'Original {original.shape}')
+axes[0].set_title(f'1. Original {original.shape}')
 
-axes[1].imshow(enhanced, cmap='gray')
-axes[1].set_title('After CLAHE')
+axes[1].imshow(denoised, cmap='gray')
+axes[1].set_title('2. Bilateral Denoised')
 
-axes[2].imshow(padded_and_resized, cmap='gray')
-axes[2].set_title(f'Padded & Resized {padded_and_resized.shape}')
+axes[2].imshow(enhanced, cmap='gray')
+axes[2].set_title('3. After CLAHE')
+
+axes[3].imshow(padded_and_resized, cmap='gray')
+axes[3].set_title(f'4. Padded & Resized {padded_and_resized.shape}')
 plt.show()
