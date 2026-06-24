@@ -4,94 +4,77 @@ import kagglehub
 import numpy as np
 from matplotlib import pyplot as plt
 
-# Downloads if not cached yet, otherwise just returns the existing local path instantly
+# 1. SETUP & CONFIGURATION
 DATA_DIR = kagglehub.dataset_download("paultimothymooney/chest-xray-pneumonia")
 TRAIN_DIR = os.path.join(DATA_DIR, "chest_xray", "train")
-
-# Peek at a sample image
-sample_path = os.path.join(TRAIN_DIR, "NORMAL", os.listdir(os.path.join(TRAIN_DIR, "NORMAL"))[0])
-sample_image = cv2.imread(sample_path, cv2.IMREAD_GRAYSCALE)
-
-print(f"Image shape: {sample_image.shape}")
-print(f"Pixel range: {sample_image.min()} to {sample_image.max()}")
-print(f"Data type: {sample_image.dtype}")
-
-print(os.listdir(DATA_DIR))
+TARGET_SIZE = (224, 224)  # Global target size
 
 
-def validate_dataset(data_dir):
-    """Scan a dataset folder and flag common data quality issues."""
-    corrupted = []
-    too_small = []
-    nearly_black = []
-    total = 0
+# 2. IMAGE PREPROCESSING HELPER
+def resize_with_padding(image, target_size):
+    """Preserves aspect ratio and pads remaining edges with black pixels."""
+    h, w = image.shape[:2]
+    target_h, target_w = target_size
+    scale = min(target_h / h, target_w / w)
+    new_h, new_w = int(h * scale), int(w * scale)
+    resized = cv2.resize(image, (new_w, new_h))
 
+    pad_h = target_h - new_h
+    pad_w = target_w - new_w
+    top, bottom = pad_h // 2, pad_h - pad_h // 2
+    left, right = pad_w // 2, pad_w - pad_w // 2
+
+    padded = cv2.copyMakeBorder(resized, top, bottom, left, right,
+                                cv2.BORDER_CONSTANT, value=0)
+    return padded
+
+
+# 3. CLEAN FILE SCANNER
+def get_clean_file_paths(data_dir):
+    valid_paths = []
     for class_name in os.listdir(data_dir):
         class_path = os.path.join(data_dir, class_name)
         if not os.path.isdir(class_path):
             continue
         for fname in os.listdir(class_path):
             fpath = os.path.join(class_path, fname)
-            total += 1
-            try:
-                img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
-                if img is None:
-                    corrupted.append(fpath)
-                    continue
-                if img.shape[0] < 100 or img.shape[1] < 100:
-                    too_small.append(fpath)
-                if img.mean() < 5:
-                    nearly_black.append(fpath)
-            except Exception:
-                corrupted.append(fpath)
 
-    print(f"Total files scanned: {total}")
-    print(f"Corrupted: {len(corrupted)}")
-    print(f"Too small: {len(too_small)}")
-    print(f"Nearly black: {len(nearly_black)}")
-    return corrupted, too_small, nearly_black
+            # Basic validation check
+            img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
+            if img is None: continue
+            if img.shape[0] < 100 or img.shape[1] < 100: continue
+            if img.mean() < 5: continue
+
+            valid_paths.append(fpath)
+
+    print(f"Total valid images found: {len(valid_paths)}")
+    return valid_paths
 
 
-validate_dataset(TRAIN_DIR)
-
-image = cv2.imread(sample_path, cv2.IMREAD_GRAYSCALE)
-
-# Scale to [0, 1]
-image_scaled = image.astype(np.float32) / 255.0
-
-print(f"Before scaling: {image.min()} to {image.max()}")
-print(f"After scaling:  {image_scaled.min():.3f} to {image_scaled.max():.3f}")
+train_image_paths = get_clean_file_paths(TRAIN_DIR)
 
 
-def compute_train_stats(data_dir):
-    """Compute global mean and std incrementally without breaking RAM."""
+# 4. UPDATED STATS CALCULATOR (Now much faster because images are smaller!)
+def compute_train_stats_from_list(image_paths, target_size):
     total_pixels = 0
     pixel_sum = 0.0
     pixel_squared_sum = 0.0
 
     print("Calculating dataset statistics incrementally...")
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
-    for class_name in os.listdir(data_dir):
-        class_path = os.path.join(data_dir, class_name)
-        if not os.path.isdir(class_path):
-            continue
+    for fpath in image_paths:
+        img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
 
-        for fname in os.listdir(class_path):
-            fpath = os.path.join(class_path, fname)
+        # Apply preprocessing sequence: Enhance -> Resize -> Scale
+        img_enhanced = clahe.apply(img)
+        img_resized = resize_with_padding(img_enhanced, target_size)
+        img_scaled = img_resized.astype(np.float32) / 255.0
 
-            # Read image and scale it to [0, 1] just like your preprocessing step
-            img = cv2.imread(fpath, cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
+        total_pixels += img_scaled.size
+        pixel_sum += np.sum(img_scaled)
+        pixel_squared_sum += np.sum(img_scaled ** 2)
 
-            img_scaled = img.astype(np.float32) / 255.0
-
-            # Update running metrics
-            total_pixels += img_scaled.size
-            pixel_sum += np.sum(img_scaled)
-            pixel_squared_sum += np.sum(img_scaled ** 2)
-
-    # Final calculations using variance formula: Var = E[X^2] - (E[X])^2
     mean = pixel_sum / total_pixels
     variance = (pixel_squared_sum / total_pixels) - (mean ** 2)
     std = np.sqrt(variance)
@@ -99,16 +82,31 @@ def compute_train_stats(data_dir):
     print(f"Dataset Mean: {mean:.4f}, Std: {std:.4f}")
     return mean, std
 
-compute_train_stats(TRAIN_DIR)
 
-# CLAHE enhances local contrast — useful for X-rays
+# Calculate stats on the fully preprocessed images
+train_mean, train_std = compute_train_stats_from_list(train_image_paths, TARGET_SIZE)
+
+# 5. VISUALIZE PREPROCESSING PIPELINE STEP-BY-STEP
+sample_path = train_image_paths[0]
+original = cv2.imread(sample_path, cv2.IMREAD_GRAYSCALE)
+
+# Run pipeline on sample
 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-image_enhanced = clahe.apply(image)
+enhanced = clahe.apply(original)
+padded_and_resized = resize_with_padding(enhanced, TARGET_SIZE)
 
-# Visualize the difference
-fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-axes[0].imshow(image, cmap='gray')
-axes[0].set_title('Original')
-axes[1].imshow(image_enhanced, cmap='gray')
+# Final step: Normalize
+scaled = padded_and_resized.astype(np.float32) / 255.0
+normalized = (scaled - train_mean) / train_std
+
+# Visual Confirmation
+fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+axes[0].imshow(original, cmap='gray')
+axes[0].set_title(f'Original {original.shape}')
+
+axes[1].imshow(enhanced, cmap='gray')
 axes[1].set_title('After CLAHE')
+
+axes[2].imshow(padded_and_resized, cmap='gray')
+axes[2].set_title(f'Padded & Resized {padded_and_resized.shape}')
 plt.show()
