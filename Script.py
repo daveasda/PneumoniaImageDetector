@@ -2,6 +2,7 @@ import os
 import cv2
 import kagglehub
 import numpy as np
+from matplotlib import pyplot as plt
 
 # Downloads if not cached yet, otherwise just returns the existing local path instantly
 DATA_DIR = kagglehub.dataset_download("paultimothymooney/chest-xray-pneumonia")
@@ -99,3 +100,15 @@ def compute_train_stats(data_dir):
     return mean, std
 
 compute_train_stats(TRAIN_DIR)
+
+# CLAHE enhances local contrast — useful for X-rays
+clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+image_enhanced = clahe.apply(image)
+
+# Visualize the difference
+fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+axes[0].imshow(image, cmap='gray')
+axes[0].set_title('Original')
+axes[1].imshow(image_enhanced, cmap='gray')
+axes[1].set_title('After CLAHE')
+plt.show()
